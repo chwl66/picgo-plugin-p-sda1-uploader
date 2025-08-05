@@ -6,12 +6,6 @@
 [![GitHub package.json version](https://img.shields.io/github/package-json/v/chwl66/picgo-plugin-p-sda1-uploader?style=flat-square&label=github%20version)](https://github.com/chwl66/picgo-plugin-p-sda1-uploader)
 [![GitHub stars](https://img.shields.io/github/stars/chwl66/picgo-plugin-p-sda1-uploader?style=social)](https://github.com/chwl66/picgo-plugin-p-sda1-uploader)
 
-## 参数说明
-
-| 参数名      | 说明                       |
-| ----------- | -------------------------- |
-| filename    | 上传图片的文件名           |
-
 ## 安装
 
 ### PicGo CLI 安装
