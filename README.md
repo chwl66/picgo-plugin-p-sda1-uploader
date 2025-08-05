@@ -32,20 +32,17 @@ npm install picgo-plugin-p-sda1-uploader --save
 
 ## 使用方法
 
-1. 安装插件后，在 PicGo 的“图床设置”中选择 `p.sda1.dev 图床`。
+1. 安装插件后，不需要配置，直接在 PicGo 的“图床设置”中选择 `流浪图床`。
 2. 上传图片即可自动使用 p.sda1.dev 图床。
 
 ## 返回结果
 
-- 上传成功后，返回图片的直链和删除链接。
+- 上传成功后，返回图片的直链。
 - 图片直链格式如：  
   ```
   https://p.sda1.dev/26/xxxxxx/your_image.png
   ```
-- 删除链接格式如：  
-  ```
-  https://p.sda1.dev/api/v1/delete/26/xxxxxx/xxxxxxxx
-  ```
+
 
 ## 相关链接
 
