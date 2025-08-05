@@ -1,0 +1,22 @@
+{
+  "name": "picgo-plugin-p-sda1-uploader",
+  "version": "1.0.4",
+  "description": "上传图片到流浪图床",
+  "main": "index.js",
+  "author": "chwl66",
+  "license": "MIT",
+  "keywords": [
+    "picgo",
+    "plugin",
+    "uploader",
+    "p.sda1.dev"
+  ],
+  "engines": {
+    "picgo": ">=2.3.0"
+  },
+  "homepage": "https://p.sda1.dev/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chwl66/picgo-plugin-p-sda1-uploader"
+  }
+}
