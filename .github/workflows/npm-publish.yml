@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main         #仅当 push 到 main 分支时触发
+  workflow_dispatch:  # 添加手动触发
 
 jobs:
   publish:
