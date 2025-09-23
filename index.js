@@ -4,7 +4,7 @@
 const UPLOAD_CONFIG = {
   API_URL: 'https://p.sda1.dev/api/v1/upload_external_noform',
   TIMEOUT: 30000,
-  MAX_FILE_SIZE: 10 * 1024 * 1024, // 10MB
+  MAX_FILE_SIZE: 5 * 1024 * 1024, // 5MB
   SUPPORTED_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
   MAX_RETRIES: 3,
   RETRY_DELAY: 1000
