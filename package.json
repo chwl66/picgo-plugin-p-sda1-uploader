@@ -15,13 +15,13 @@
     "流浪图床"
   ],
   "engines": {
-    "node": ">=12.0.0",
+    "node": ">=14.0.0",
     "picgo": ">=2.3.0"
   },
   "peerDependencies": {
     "picgo": ">=2.3.0"
   },
-  "homepage": "https://p.sda1.dev/",
+  "homepage": "https://github.com/chwl66/picgo-plugin-p-sda1-uploader",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/chwl66/picgo-plugin-p-sda1-uploader.git"
@@ -31,7 +31,8 @@
   },
   "files": [
     "index.js",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -41,6 +42,6 @@
     "displayName": "流浪图床",
     "description": "上传图片到 p.sda1.dev 图床服务",
     "author": "chwl66",
-    "version": "2.0.0"
+    "version": "2.0.1"
   }
 }
