@@ -452,8 +452,13 @@ module.exports = (ctx) => {
       const result = await uploadSingleImage(img)
 
       if (result.success) {
+        // PicGo 规范：imgUrl 必填；url 供剪贴板优先使用
         img.imgUrl = result.url
+        img.url = result.url
         img.deleteUrl = result.deleteUrl
+        // 成功后释放本地数据，降低内存占用（官方/内置 uploader 惯例）
+        delete img.buffer
+        delete img.base64Image
         results.success.push({
           index,
           fileName: result.fileName,
@@ -509,6 +514,19 @@ module.exports = (ctx) => {
     return results
   }
 
+  const notify = (runtimeCtx, title, body) => {
+    try {
+      runtimeCtx.emit('notification', {
+        title,
+        body: body || '',
+        text: ''
+      })
+    } catch (error) {
+      // 部分运行环境可能不支持 notification，忽略即可
+      runtimeCtx.log?.debug?.(`发送通知失败: ${error.message}`)
+    }
+  }
+
   const register = () => {
     ctx.helper.uploader.register('p-sda1-uploader', {
       name: '流浪图床',
@@ -534,28 +552,51 @@ module.exports = (ctx) => {
             results.failed.forEach(fail => {
               ctx.log.warn(`  - ${fail.fileName}: ${fail.error}`)
             })
+
+            // 仅保留上传成功的项，避免 GUI/剪贴板输出空链接
+            const failedIndexSet = new Set(results.failed.map(item => item.index))
+            ctx.output = imgList.filter((_, index) => !failedIndexSet.has(index))
           }
 
           if (results.success.length === 0) {
-            throw new Error('所有图片上传失败，请检查网络连接和服务状态')
+            const detail = results.failed
+              .slice(0, 3)
+              .map(item => `${item.fileName}: ${item.error}`)
+              .join('；')
+            const message = '所有图片上传失败，请检查网络连接和服务状态'
+            notify(ctx, '流浪图床上传失败', detail || message)
+            throw new Error(message)
+          }
+
+          if (results.failed.length > 0) {
+            notify(
+              ctx,
+              '流浪图床部分上传失败',
+              `成功 ${results.success.length}/${results.total}，失败 ${results.failed.length}`
+            )
           }
         } catch (error) {
           ctx.log.error(`批量上传过程出错: ${error.message}`)
+          if (!String(error.message || '').includes('所有图片上传失败')) {
+            notify(ctx, '流浪图床上传失败', error.message || '未知错误')
+          }
           throw error
         }
 
         return ctx
       },
-      config: []
+      // 图床级配置：当前无需用户填写，返回空数组即可
+      config: () => []
     })
   }
 
-  const config = () => {
-    return []
-  }
+  // 插件级配置（存储于完整包名下）；本插件无额外配置
+  const config = () => []
 
   return {
     name: 'p-sda1-uploader',
+    // 官方推荐：声明本插件提供的 uploader id，便于发现与设为当前图床
+    uploader: 'p-sda1-uploader',
     register,
     config
   }
