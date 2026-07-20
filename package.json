@@ -1,7 +1,7 @@
 {
   "name": "picgo-plugin-p-sda1-uploader",
-  "version": "1.0.10",
-  "description": "上传图片到流浪图床",
+  "version": "2.0.0",
+  "description": "PicGo 插件：上传图片到流浪图床 (p.sda1.dev)，支持并发上传、重试机制和详细错误处理",
   "main": "index.js",
   "author": "chwl66",
   "license": "MIT",
@@ -9,14 +9,38 @@
     "picgo",
     "plugin",
     "uploader",
-    "p.sda1.dev"
+    "image",
+    "p.sda1.dev",
+    "图床",
+    "流浪图床"
   ],
   "engines": {
+    "node": ">=12.0.0",
+    "picgo": ">=2.3.0"
+  },
+  "peerDependencies": {
     "picgo": ">=2.3.0"
   },
   "homepage": "https://p.sda1.dev/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/chwl66/picgo-plugin-p-sda1-uploader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/chwl66/picgo-plugin-p-sda1-uploader/issues"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "picgo": {
+    "name": "p-sda1-uploader",
+    "displayName": "流浪图床",
+    "description": "上传图片到 p.sda1.dev 图床服务",
+    "author": "chwl66",
+    "version": "2.0.0"
   }
 }
