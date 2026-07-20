@@ -1,6 +1,6 @@
 {
   "name": "picgo-plugin-p-sda1-uploader",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "PicGo 插件：上传图片到流浪图床 (p.sda1.dev)，支持并发上传、重试机制和详细错误处理",
   "main": "index.js",
   "author": "chwl66",
@@ -44,6 +44,6 @@
     "displayName": "流浪图床",
     "description": "上传图片到 p.sda1.dev 图床服务",
     "author": "chwl66",
-    "version": "2.0.1"
+    "version": "2.0.2"
   }
 }

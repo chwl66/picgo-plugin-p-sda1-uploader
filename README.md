@@ -65,6 +65,14 @@ picgo install p-sda1-uploader
 
 ## 📝 更新日志
 
+### v2.0.2
+
+- 📐 按 PicGo SHOULD 规范对齐 uploader 契约
+- 🏷️ keywords 增加 `picgo-plugin` / `picgo-gui-plugin`，导出声明 `uploader` id
+- 📋 成功时同步写入 `img.url`，并清理 `buffer` / `base64Image`
+- 🧹 部分失败时从 `ctx.output` 移除失败项，避免空链接
+- 🔔 全失败/部分失败通过 GUI notification 提示
+
 ### v2.0.1
 
 - 🔧 修复 CI：移除 main 推送自动升版发布，避免发版环路
