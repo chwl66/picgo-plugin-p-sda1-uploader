@@ -207,6 +207,8 @@ const scenarios = [
     images: () => [{ fileName: 'evil.png', buffer: Buffer.from('MZ this is not an image') }],
     assert: (ctx, state, thrown) => {
       check('伪装成图片的文件被拒绝并抛错', !!thrown && /所有图片上传失败/.test(thrown.message))
+      check('失败原因写明类型不支持而不是误导成网络问题',
+        !!thrown && /类型不支持或无法识别/.test(thrown.message), thrown?.message)
       check('校验失败不发出网络请求', state.attempts === 0, `attempts=${state.attempts}`)
       check('全失败时发出 notification', state.notifications.length === 1)
     }
@@ -217,6 +219,8 @@ const scenarios = [
     images: () => [{ fileName: 'big.png', buffer: Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]) }],
     assert: (ctx, state, thrown) => {
       check('超过 5MB 被拒绝', !!thrown && /所有图片上传失败/.test(thrown.message))
+      check('失败原因写明超过大小限制',
+        !!thrown && /超过大小限制/.test(thrown.message), thrown?.message)
       check('超限图片不发出网络请求', state.attempts === 0, `attempts=${state.attempts}`)
     }
   },

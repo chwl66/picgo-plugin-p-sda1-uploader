@@ -336,14 +336,15 @@ module.exports = (ctx) => {
   /**
    * 验证图片数据
    * @param {Object} img - 图片对象
-   * @returns {boolean} 验证结果
+   * @returns {string|null} 验证失败的原因，通过时返回 null
    */
   const validateImage = (img) => {
     const displayName = img.fileName || 'unknown'
 
     if (!img.buffer && !img.base64Image) {
-      ctx.log.error(`图片 ${displayName} 缺少数据`)
-      return false
+      const reason = `图片 ${displayName} 缺少数据`
+      ctx.log.error(reason)
+      return reason
     }
 
     let dataUrlMimeType = null
@@ -358,39 +359,42 @@ module.exports = (ctx) => {
           throw new Error('base64 转换后数据为空')
         }
       } catch (error) {
-        ctx.log.error(`图片 ${displayName} base64 转换失败: ${error.message}`)
-        return false
+        const reason = `图片 ${displayName} base64 转换失败: ${error.message}`
+        ctx.log.error(reason)
+        return reason
       }
     }
 
     if (!Buffer.isBuffer(img.buffer)) {
-      ctx.log.error(`图片 ${displayName} 数据格式无效`)
-      return false
+      const reason = `图片 ${displayName} 数据格式无效`
+      ctx.log.error(reason)
+      return reason
     }
 
     if (img.buffer.length === 0) {
-      ctx.log.error(`图片 ${displayName} 数据为空`)
-      return false
+      const reason = `图片 ${displayName} 数据为空`
+      ctx.log.error(reason)
+      return reason
     }
 
     if (img.buffer.length > UPLOAD_CONFIG.MAX_FILE_SIZE) {
-      ctx.log.error(
+      const reason =
         `图片 ${displayName} 超过大小限制 (${UPLOAD_CONFIG.MAX_FILE_SIZE / 1024 / 1024}MB)`
-      )
-      return false
+      ctx.log.error(reason)
+      return reason
     }
 
     const magicMime = detectMimeTypeFromBuffer(img.buffer)
     if (!magicMime || !UPLOAD_CONFIG.SUPPORTED_TYPES.includes(magicMime)) {
       // 魔数无法识别时不再信任扩展名，避免伪装成图片
       const declaredMime = inferMimeType(img, dataUrlMimeType, img.buffer)
-      ctx.log.error(
+      const reason =
         `图片 ${displayName} 类型不支持或无法识别: magic=${magicMime || 'unknown'}, declared=${declaredMime || 'unknown'}`
-      )
-      return false
+      ctx.log.error(reason)
+      return reason
     }
 
-    return true
+    return null
   }
 
   /**
@@ -506,11 +510,12 @@ module.exports = (ctx) => {
 
   const processSingleImage = async (img, index, imgList, results) => {
     try {
-      if (!validateImage(img)) {
+      const validationError = validateImage(img)
+      if (validationError) {
         results.failed.push({
           index,
           fileName: img.fileName || `image-${index}`,
-          error: '图片验证失败'
+          error: validationError
         })
         return
       }
@@ -660,7 +665,9 @@ module.exports = (ctx) => {
               .slice(0, 3)
               .map(item => `${item.fileName}: ${item.error}`)
               .join('；')
-            const message = '所有图片上传失败，请检查网络连接和服务状态'
+            // 原因直接进异常信息：固定提示"请检查网络连接"会把类型不支持、体积超限这类
+            // 本地校验失败误导成网络问题
+            const message = `所有图片上传失败：${detail || '未知原因'}`
             notify(ctx, '流浪图床上传失败', detail || message)
             throw new Error(message)
           }
