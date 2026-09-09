@@ -1,0 +1,18 @@
+# 依赖
+node_modules/
+
+# npm 产物
+package-lock.json
+*.tgz
+npm-debug.log*
+yarn-error.log*
+
+# 本机工具配置（含机器本地路径与授权记录，不入库）
+.claude/
+.qwen/
+.cursor/
+
+# 编辑器 / 系统
+.idea/
+.DS_Store
+Thumbs.db
