@@ -68,7 +68,7 @@ const handle = async (uploader, ctx) => {
  * @param {(ctx, state) => Promise<void>} body 用例主体
  */
 const withMockServer = async (handler, body) => {
-  const state = { attempts: 0, requests: [], notifications: [] }
+  const state = { attempts: 0, requests: [], notifications: [], logs: [] }
 
   const server = http.createServer((req, res) => {
     const chunks = []
@@ -88,11 +88,15 @@ const withMockServer = async (handler, body) => {
 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   const port = server.address().port
-  const silent = () => {}
 
   const ctx = {
     output: [],
-    log: { info: silent, warn: silent, error: silent, debug: silent },
+    log: {
+      info: (msg) => state.logs.push({ level: 'info', msg }),
+      warn: (msg) => state.logs.push({ level: 'warn', msg }),
+      error: (msg) => state.logs.push({ level: 'error', msg }),
+      debug: (msg) => state.logs.push({ level: 'debug', msg })
+    },
     emit: (event, payload) => {
       if (event === 'notification') {
         state.notifications.push(payload)
@@ -306,6 +310,11 @@ const scenarios = [
     timeout: 300,
     assert: (ctx, state) => {
       check('超时（statusCode: 0）重试（期望 4 次）', state.attempts === 4, `attempts=${state.attempts}`)
+      check('响应丢失型失败提示核对重复文件',
+        state.notifications.some(note => /重复文件/.test(note.title)),
+        JSON.stringify(state.notifications.map(note => note.title)))
+      check('重复风险提示排在失败通知之前',
+        state.notifications[0]?.title === '流浪图床可能存在重复文件')
     }
   },
   {
@@ -326,6 +335,52 @@ const scenarios = [
     assert: (ctx, state) => {
       check('超时后重试并最终成功', ctx.output[0]?.imgUrl === 'https://p.sda1.dev/i/1.png')
       check('超时恢复后只请求 2 次', state.attempts === 2, `attempts=${state.attempts}`)
+      check('超时恢复后仍提示可能残留重复文件',
+        state.logs.some(log => log.level === 'warn' && /重复文件/.test(log.msg)))
+    }
+  },
+  {
+    name: '建连失败后重试成功',
+    handler: (req, res) => okUpload(res),
+    images: () => [{ fileName: 'a.png', buffer: PNG }],
+    firstError: 'refused',
+    assert: (ctx, state, thrown) => {
+      check('连接被拒后重试成功',
+        thrown === null && ctx.output[0]?.imgUrl === 'https://p.sda1.dev/i/1.png')
+      // 建连阶段就失败，请求根本没送达，不存在落盘可能，不应打扰用户
+      check('建连失败不标记重复风险',
+        !state.logs.some(log => /重复文件/.test(log.msg)) && state.notifications.length === 0,
+        JSON.stringify(state.notifications.map(note => note.title)))
+    }
+  },
+  {
+    name: 'DNS 失败后重试成功',
+    handler: (req, res) => okUpload(res),
+    images: () => [{ fileName: 'a.png', buffer: PNG }],
+    firstError: 'dns',
+    assert: (ctx, state, thrown) => {
+      check('getaddrinfo ENOTFOUND 会重试并最终成功',
+        thrown === null && ctx.output[0]?.imgUrl === 'https://p.sda1.dev/i/1.png')
+      check('DNS 失败不标记重复风险',
+        !state.logs.some(log => /重复文件/.test(log.msg)) && state.notifications.length === 0)
+    }
+  },
+  {
+    name: 'HTTP 失败后重试成功',
+    handler: (req, res, state) => {
+      if (state.attempts === 1) {
+        res.writeHead(503, { 'content-type': 'application/json' })
+        res.end('{"code":503}')
+        return
+      }
+      okUpload(res)
+    },
+    images: () => [{ fileName: 'a.png', buffer: PNG }],
+    assert: (ctx, state, thrown) => {
+      check('5xx 后重试成功', thrown === null && ctx.output[0]?.imgUrl === 'https://p.sda1.dev/i/1.png')
+      // 5xx 说明请求完整送达且服务端明确表态，不算"静默落盘"
+      check('HTTP 错误不标记重复风险',
+        !state.logs.some(log => /重复文件/.test(log.msg)) && state.notifications.length === 0)
     }
   }
 ]
@@ -337,6 +392,22 @@ const runScenario = async (scenario) => {
       if (scenario.timeout) {
         const inner = ctx.request
         ctx.request = (options) => inner(Object.assign({}, options, { timeout: scenario.timeout }))
+      }
+      if (scenario.firstError) {
+        const injectedMessage = {
+          timeout: 'timeout of 30000ms exceeded',
+          refused: 'connect ECONNREFUSED 127.0.0.1:9',
+          dns: 'getaddrinfo ENOTFOUND p.sda1.dev'
+        }[scenario.firstError]
+        const inner = ctx.request
+        let injected = false
+        ctx.request = (options) => {
+          if (!injected) {
+            injected = true
+            return Promise.reject(noResponseError(injectedMessage))
+          }
+          return inner(options)
+        }
       }
       ctx.output = scenario.images()
       const thrown = await handle(state.uploader, ctx)

@@ -30,10 +30,26 @@ const RETRYABLE_ERROR_CODES = new Set([
   'ESOCKETTIMEDOUT',
   'ECONNABORTED',
   'EAI_AGAIN',
+  'ENOTFOUND',
   'ENETUNREACH',
   'EHOSTUNREACH',
   'EPIPE'
 ])
+
+// 请求体可能已经送达图床、只是响应没回来的错误（超时、连接中途断开）。
+// 这类错误重试成功时，上一次尝试也可能已经存了一份，需要提示用户核对重复文件；
+// 而 DNS 失败、连接被拒、网络不可达发生在建连阶段，可以直接排除落盘可能
+const MAY_BE_STORED_ERROR_KEYWORDS = [
+  'timeout',
+  'timed out',
+  'socket hang up',
+  'connection reset',
+  'econnreset',
+  'epipe',
+  'etimedout',
+  'esockettimedout',
+  'econnaborted'
+]
 
 const RETRYABLE_ERROR_MESSAGE_KEYWORDS = [
   'timeout',
@@ -249,6 +265,21 @@ module.exports = (ctx) => {
     return isNetworkLevelError(error)
   }
 
+  /**
+   * 判断"文件可能已被图床收下、只是响应丢失"，用于标记重复文件风险
+   * @param {Error} error - 请求错误（仅在请求本身失败时传入）
+   * @returns {boolean} 是否可能已落盘
+   */
+  const mayBeStoredOnHost = (error) => {
+    // 拿到 HTTP 响应说明请求完整送达且服务端已明确表态，不存在静默落盘
+    if (getErrorStatusCode(error) !== null) {
+      return false
+    }
+
+    const haystack = `${error?.code || ''} ${error?.message || ''}`.toLowerCase()
+    return MAY_BE_STORED_ERROR_KEYWORDS.some(keyword => haystack.includes(keyword))
+  }
+
   const formatErrorForLog = (error) => {
     const message = error?.message || 'unknown error'
     const statusCode = getErrorStatusCode(error)
@@ -405,10 +436,12 @@ module.exports = (ctx) => {
    * 上传单张图片（带可恢复错误重试）
    * @param {Object} img - 图片对象
    * @param {number} retryCount - 已重试次数
+   * @param {boolean} duplicateRisk - 此前是否出现过"响应丢失"型错误
    * @returns {Promise<Object>} 上传结果
    */
-  const uploadSingleImage = async (img, retryCount = 0) => {
+  const uploadSingleImage = async (img, retryCount = 0, duplicateRisk = false) => {
     const fileName = sanitizeFileName(img.fileName)
+    let requestSettled = false
 
     try {
       const response = await ctx.request({
@@ -422,6 +455,7 @@ module.exports = (ctx) => {
         body: img.buffer,
         timeout: UPLOAD_CONFIG.TIMEOUT
       })
+      requestSettled = true
 
       const responsePreview = typeof response === 'string'
         ? response.slice(0, 200)
@@ -434,17 +468,22 @@ module.exports = (ctx) => {
         success: true,
         url,
         deleteUrl,
-        fileName
+        fileName,
+        duplicateRisk
       }
     } catch (error) {
       const detail = formatErrorForLog(error)
       const errorMsg = `上传失败 (${fileName}): ${detail}`
       const shouldRetry = retryCount < UPLOAD_CONFIG.MAX_RETRIES && isRetryableError(error)
 
+      // 请求本身失败才可能"已落盘但响应丢失"；请求成功后的解析/校验异常另当别论
+      const currentRisk = requestSettled ? false : mayBeStoredOnHost(error)
+      const carriedRisk = duplicateRisk || currentRisk
+
       if (shouldRetry) {
         ctx.log.warn(`${errorMsg}, 准备重试 (${retryCount + 1}/${UPLOAD_CONFIG.MAX_RETRIES})`)
         await delay(UPLOAD_CONFIG.RETRY_DELAY * (retryCount + 1))
-        return uploadSingleImage(img, retryCount + 1)
+        return uploadSingleImage(img, retryCount + 1, carriedRisk)
       }
 
       ctx.log.error(
@@ -453,7 +492,8 @@ module.exports = (ctx) => {
       return {
         success: false,
         error: detail,
-        fileName
+        fileName,
+        duplicateRisk: carriedRisk
       }
     }
   }
@@ -485,12 +525,23 @@ module.exports = (ctx) => {
           url: result.url
         })
         ctx.log.info(`上传成功 (${index + 1}/${imgList.length}): ${result.url}`)
+
+        if (result.duplicateRisk) {
+          results.duplicateRisk.push({ index, fileName: result.fileName, recovered: true })
+          ctx.log.warn(
+            `上传成功 (${result.fileName})，但重试前出现过响应丢失型网络错误，图床可能残留一份重复文件`
+          )
+        }
       } else {
         results.failed.push({
           index,
           fileName: result.fileName,
           error: result.error
         })
+
+        if (result.duplicateRisk) {
+          results.duplicateRisk.push({ index, fileName: result.fileName, recovered: false })
+        }
       }
     } catch (error) {
       results.failed.push({
@@ -511,6 +562,7 @@ module.exports = (ctx) => {
     const results = {
       success: [],
       failed: [],
+      duplicateRisk: [],
       total: imgList.length
     }
 
@@ -576,6 +628,25 @@ module.exports = (ctx) => {
             // 仅保留上传成功的项，避免 GUI/剪贴板输出空链接
             const failedIndexSet = new Set(results.failed.map(item => item.index))
             ctx.output = imgList.filter((_, index) => !failedIndexSet.has(index))
+          }
+
+          // 重试期间出现过"响应丢失"型错误：图床可能已经存下我们无法记录的副本
+          if (results.duplicateRisk.length > 0) {
+            const detail = results.duplicateRisk
+              .slice(0, 3)
+              .map(item => item.fileName)
+              .join('、')
+            const unrecovered = results.duplicateRisk.filter(item => !item.recovered).length
+
+            ctx.log.warn(
+              `以下图片可能因响应丢失而在图床留下重复文件: ${detail}` +
+              (unrecovered > 0 ? `（其中 ${unrecovered} 张最终未上传成功，需手动核对）` : '')
+            )
+            notify(
+              ctx,
+              '流浪图床可能存在重复文件',
+              `重试期间连接中断，图床可能已存下无法自动删除的副本，请核对：${detail}`
+            )
           }
 
           if (results.success.length === 0) {
