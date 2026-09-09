@@ -53,7 +53,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `validateImage(img)`：数据来源（`buffer`/`base64Image`）、大小限制，并以**文件魔数**判定类型（不信任扩展名）。
 - `parseResponse(response)`：兼容 `data.url` 与 `url` 两种结构，并强制校验返回地址为 `https` + `p.sda1.dev`。
 - `getErrorStatusCode` / `isNetworkLevelError` / `isRetryableError`：重试判定。**关键约束**：PicGo 核心（2.0.3 与 3.0.2 实测一致）把超时、DNS、连接失败统一成 `statusCode: 0` 且不带 `error.code`，因此 `0` 必须按"没拿到响应"处理，落进传输层重试判断；只有拿到真实 HTTP 状态时才按 429/5xx 判定。改动这里务必跑 `npm test`。
-- `uploadSingleImage(img, retryCount)`：单图上传 + 线性退避重试（1s/2s/3s，最多 3 次）。
+- `mayBeStoredOnHost(error)`：区分"请求可能已落盘、只是响应丢失"（超时、连接中途断开）与"建连阶段就失败"（DNS、拒绝、不可达）以及"拿到 HTTP 响应"。只有第一类会标记重复文件风险，重试时逐级携带。
+- `uploadSingleImage(img, retryCount, duplicateRisk)`：单图上传 + 线性退避重试（1s/2s/3s，最多 3 次），并把重复风险带到最终结果。
 - `uploadImages(imgList)`：有限并发批量上传并汇总结果。
 
 ### 4) 外部交互与依赖边界
@@ -81,9 +82,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - 未发现 `.cursorrules`、`.cursor/rules/`、`.github/copilot-instructions.md`。
 
-## 维护时待办（2026-09 代码审计结论，均已确认但尚未修）
+## 维护时待办（2026-09 代码审计结论，除标注"已缓解"外均未修）
 
-- **重试非幂等**：请求已到达服务端但响应丢失时，重试会产生重复文件，且失败分支不保留 `delete_url`，用户无法清理。修重试相关逻辑时一并考虑。
+- **重试仍可能产生重复文件（已缓解，无法根治）**：图床没有幂等键接口，"响应丢失"型错误无法判断服务端是否已存文件。现在的做法是标记 `duplicateRisk` 并通过 notification + 日志提示用户核对，而不是静默丢弃线索。要根治需要服务端提供幂等/去重能力，或改为对这类错误不重试（会牺牲可用性）。
+- **CI 未跑 `npm test`**：发布链路可能直发有回归的版本。
 - **429 未读 `Retry-After`**：目前固定线性退避 1s/2s/3s。
 - **文件名净化把所有非 ASCII 归一为 `_`**：`../../secret 照片#1.png` → `secret_1.png`。安全性没问题，但中文原名会丢失、极端情况下同名互相覆盖；`sanitizeFileName` 的 `fallbackExt` 恒为 `.png`。
 - **`ctx.log.debug` 会打印响应体前 200 字符**，其中含 `delete_url`（等同删除凭据）。
