@@ -18,10 +18,10 @@
   ],
   "engines": {
     "node": ">=14.0.0",
-    "picgo": ">=2.3.0"
+    "picgo": ">=2.0.3"
   },
   "peerDependencies": {
-    "picgo": ">=2.3.0"
+    "picgo": ">=2.0.3"
   },
   "homepage": "https://github.com/chwl66/picgo-plugin-p-sda1-uploader",
   "repository": {

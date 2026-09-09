@@ -33,6 +33,13 @@ npm install picgo -g
 picgo install p-sda1-uploader
 ```
 
+### 兼容性
+
+已在下列 PicGo 核心版本上跑通集成测试（`npm test`）：
+
+- `picgo@2.0.3`（基于 `request` 的请求实现）
+- `picgo@3.0.2`（基于 axios 的请求实现）
+
 ## 🔧 使用方法
 
 1. 安装插件后，在 PicGo 的「图床设置」中选择「流浪图床」
