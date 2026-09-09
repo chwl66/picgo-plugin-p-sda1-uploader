@@ -35,6 +35,14 @@ const RETRYABLE_ERROR_CODES = new Set([
   'EPIPE'
 ])
 
+const RETRYABLE_ERROR_MESSAGE_KEYWORDS = [
+  'timeout',
+  'timed out',
+  'network',
+  'socket hang up',
+  'connection reset'
+]
+
 module.exports = (ctx) => {
   const getMimeTypeFromExt = (extname) => {
     if (!extname || typeof extname !== 'string') {
@@ -182,51 +190,63 @@ module.exports = (ctx) => {
     return base
   }
 
-  const getErrorStatusCode = (error) => {
-    const statusCode =
-      error?.statusCode ||
-      error?.status ||
-      error?.response?.statusCode ||
+  const readErrorStatusCode = (error) => {
+    const candidates = [
+      error?.statusCode,
+      error?.status,
+      error?.response?.statusCode,
       error?.response?.status
+    ]
 
-    if (typeof statusCode === 'number') {
-      return statusCode
-    }
+    for (const candidate of candidates) {
+      if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+        return candidate
+      }
 
-    if (typeof statusCode === 'string' && /^\d+$/.test(statusCode)) {
-      return Number(statusCode)
+      if (typeof candidate === 'string' && /^\d+$/.test(candidate)) {
+        return Number(candidate)
+      }
     }
 
     return null
+  }
+
+  // PicGo 核心（2.x/3.x 实测一致）把超时、DNS 失败、连接被拒等「没拿到响应」的错误
+  // 统一成 statusCode: 0 且不携带 error.code，因此 0 不能当作 HTTP 状态码返回，
+  // 否则调用方会把它当成一次合法响应而跳过传输层的重试判断
+  const getErrorStatusCode = (error) => {
+    const statusCode = readErrorStatusCode(error)
+    return statusCode !== null && statusCode >= 100 ? statusCode : null
+  }
+
+  const isNetworkLevelError = (error) => {
+    if (readErrorStatusCode(error) === 0) {
+      return true
+    }
+
+    const code = error?.code
+    if (typeof code === 'string' && RETRYABLE_ERROR_CODES.has(code.toUpperCase())) {
+      return true
+    }
+
+    const message = (error?.message || '').toLowerCase()
+
+    // 部分运行环境只把 errno 留在 message 里（如 "connect ECONNREFUSED 127.0.0.1:443"）
+    if (Array.from(RETRYABLE_ERROR_CODES).some(code => message.includes(code.toLowerCase()))) {
+      return true
+    }
+
+    return RETRYABLE_ERROR_MESSAGE_KEYWORDS.some(keyword => message.includes(keyword))
   }
 
   const isRetryableError = (error) => {
     const statusCode = getErrorStatusCode(error)
 
     if (statusCode !== null) {
-      if (statusCode === 429) {
-        return true
-      }
-
-      if (statusCode >= 500) {
-        return true
-      }
-
-      return false
+      return statusCode === 429 || statusCode >= 500
     }
 
-    if (error?.code && RETRYABLE_ERROR_CODES.has(error.code)) {
-      return true
-    }
-
-    const message = (error?.message || '').toLowerCase()
-    return (
-      message.includes('timeout') ||
-      message.includes('timed out') ||
-      message.includes('network') ||
-      message.includes('socket hang up') ||
-      message.includes('connection reset')
-    )
+    return isNetworkLevelError(error)
   }
 
   const formatErrorForLog = (error) => {
