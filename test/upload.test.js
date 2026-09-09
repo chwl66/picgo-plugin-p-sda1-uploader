@@ -262,6 +262,46 @@ const scenarios = [
     }
   },
   {
+    name: '删除链接脱敏',
+    handler: (req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        code: 200,
+        data: { url: 'https://p.sda1.dev/i/1.png', delete_url: 'https://p.sda1.dev/del/super-secret-token' }
+      }))
+    },
+    images: () => [{ fileName: 'a.png', buffer: PNG }],
+    assert: (ctx, state) => {
+      const debugLogs = state.logs.filter(log => log.level === 'debug').map(log => log.msg).join('\n')
+      check('delete_url 不写入调试日志',
+        !debugLogs.includes('super-secret-token'), debugLogs.slice(0, 120))
+      check('调试日志保留响应结构（值被替换）',
+        /delete_url.{0,4}\*\*\*/.test(debugLogs), debugLogs.slice(0, 120))
+      check('脱敏不影响回写给 PicGo 的 deleteUrl',
+        ctx.output[0].deleteUrl === 'https://p.sda1.dev/del/super-secret-token',
+        String(ctx.output[0].deleteUrl))
+    }
+  },
+  {
+    name: '错误预览脱敏',
+    handler: (req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        code: 400,
+        message: 'quota exceeded',
+        delete_url: 'https://p.sda1.dev/del/leaky-token'
+      }))
+    },
+    images: () => [{ fileName: 'a.png', buffer: PNG }],
+    assert: (ctx, state, thrown) => {
+      const body = state.notifications[0]?.body || ''
+      check('错误通知与异常里不含 delete_url',
+        !body.includes('leaky-token') && !(thrown?.message || '').includes('leaky-token'), body.slice(0, 160))
+      check('错误预览保留其余诊断字段',
+        /quota exceeded/.test(body) && /delete_url.{0,4}\*\*\*/.test(body), body.slice(0, 160))
+    }
+  },
+  {
     name: 'HTTP 5xx 重试',
     handler: (req, res) => {
       res.writeHead(500, { 'content-type': 'application/json' })

@@ -59,6 +59,12 @@ const RETRYABLE_ERROR_MESSAGE_KEYWORDS = [
   'connection reset'
 ]
 
+// delete_url 等价于"拿到就能删图"的凭证，PicGo 的日志文件是明文，
+// 因此所有会把响应内容写进日志/通知的地方都必须先过一遍脱敏
+const SECRET_FIELD_PATTERN = /(["']?delete[_-]?urls?["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,}&]+)/gi
+
+const redactSecrets = (value) => String(value).replace(SECRET_FIELD_PATTERN, '$1***')
+
 module.exports = (ctx) => {
   const getMimeTypeFromExt = (extname) => {
     if (!extname || typeof extname !== 'string') {
@@ -399,7 +405,7 @@ module.exports = (ctx) => {
       try {
         resObj = JSON.parse(response)
       } catch (error) {
-        throw new Error(`服务器返回格式错误: ${response.substring(0, 100)}`)
+        throw new Error(`服务器返回格式错误: ${redactSecrets(response.substring(0, 100))}`)
       }
     }
 
@@ -415,8 +421,8 @@ module.exports = (ctx) => {
 
     if (!url) {
       const preview = typeof resObj === 'object'
-        ? JSON.stringify(resObj).slice(0, 200)
-        : String(resObj).slice(0, 200)
+        ? redactSecrets(JSON.stringify(resObj).slice(0, 200))
+        : redactSecrets(String(resObj).slice(0, 200))
       throw new Error(`服务器未返回有效地址: ${preview}`)
     }
 
@@ -458,8 +464,8 @@ module.exports = (ctx) => {
       requestSettled = true
 
       const responsePreview = typeof response === 'string'
-        ? response.slice(0, 200)
-        : JSON.stringify(response).slice(0, 200)
+        ? redactSecrets(response.slice(0, 200))
+        : redactSecrets(JSON.stringify(response).slice(0, 200))
       ctx.log.debug(`p.sda1.dev 响应 (${fileName}): ${responsePreview}`)
 
       const { url, deleteUrl } = parseResponse(response)
