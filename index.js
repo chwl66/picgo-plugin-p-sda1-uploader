@@ -1,5 +1,10 @@
 // PicGo 插件：p-sda1-uploader
 // 用于将图片上传到 p.sda1.dev 图床服务
+//
+// 接口契约以图床官方 ShareX 配置（https://p.sda1.dev/p.sda1.dev.sxcu）为准：
+//   POST https://p.sda1.dev/api/v1/upload_external_noform?filename=<name>
+//   Body: Binary（Content-Type: application/octet-stream）
+//   取回 data.url / data.delete_url
 
 const path = require('path')
 const { version: PACKAGE_VERSION } = require('./package.json')
@@ -8,21 +13,18 @@ const UPLOAD_CONFIG = {
   API_URL: 'https://p.sda1.dev/api/v1/upload_external_noform',
   ALLOWED_HOSTS: new Set(['p.sda1.dev']),
   TIMEOUT: 30000,
-  MAX_FILE_SIZE: 5 * 1024 * 1024, // 5MB
-  SUPPORTED_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+  // 图床硬限制 5MiB：超出时返回 500 {"success":false,"message":"The file to upload cannot be larger than 5MiB."}
+  MAX_FILE_SIZE: 5 * 1024 * 1024,
   MAX_RETRIES: 3,
   RETRY_DELAY: 1000,
   MAX_CONCURRENCY: 3,
   MAX_FILENAME_LENGTH: 128
 }
 
-const EXTENSION_TO_MIME = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp'
-}
+// 图床接受任意 Unicode 文件名（2026-10 实测：中文名可上传，返回的 URL 直接访问返回 200），
+// 但文件名会被原样拼进 URL，所以只中和"会破坏链接/路径"的字符，中文等可读字符保留。
+// 注意：空白必须替换——返回的 URL 里空格不会被编码，Markdown 链接会在这里断掉
+const UNSAFE_FILENAME_CHARS = /[\u0000-\u001f\u007f\s\\/:*?"<>|#%&'()\[\]{}]/g
 
 const RETRYABLE_ERROR_CODES = new Set([
   'ECONNRESET',
@@ -35,6 +37,9 @@ const RETRYABLE_ERROR_CODES = new Set([
   'EHOSTUNREACH',
   'EPIPE'
 ])
+
+// 每次调用都 Array.from 会重建数组，这里预计算
+const RETRYABLE_ERROR_CODE_LIST = Array.from(RETRYABLE_ERROR_CODES)
 
 // 请求体可能已经送达图床、只是响应没回来的错误（超时、连接中途断开）。
 // 这类错误重试成功时，上一次尝试也可能已经存了一份，需要提示用户核对重复文件；
@@ -51,6 +56,7 @@ const MAY_BE_STORED_ERROR_KEYWORDS = [
   'econnaborted'
 ]
 
+// 比上面更宽：只用来判断"值得再试一次"，不承担落盘推断
 const RETRYABLE_ERROR_MESSAGE_KEYWORDS = [
   'timeout',
   'timed out',
@@ -66,37 +72,13 @@ const SECRET_FIELD_PATTERN = /(["']?delete[_-]?urls?["']?\s*[:=]\s*)("[^"]*"|'[^
 const redactSecrets = (value) => String(value).replace(SECRET_FIELD_PATTERN, '$1***')
 
 module.exports = (ctx) => {
-  const getMimeTypeFromExt = (extname) => {
-    if (!extname || typeof extname !== 'string') {
-      return null
-    }
-
-    const normalizedExt = extname.startsWith('.')
-      ? extname.toLowerCase()
-      : `.${extname.toLowerCase()}`
-    return EXTENSION_TO_MIME[normalizedExt] || null
-  }
-
-  const getMimeTypeFromFileName = (fileName) => {
-    if (!fileName || typeof fileName !== 'string') {
-      return null
-    }
-
-    const dotIndex = fileName.lastIndexOf('.')
-    if (dotIndex === -1) {
-      return null
-    }
-
-    return getMimeTypeFromExt(fileName.slice(dotIndex))
-  }
-
   const detectMimeTypeFromBuffer = (buffer) => {
     if (!Buffer.isBuffer(buffer) || buffer.length < 3) {
       return null
     }
 
     // JPEG
-    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
       return 'image/jpeg'
     }
 
@@ -143,10 +125,15 @@ module.exports = (ctx) => {
       return 'image/webp'
     }
 
+    // BMP: "BM"。官网前端 allowedFileExtensions 也包含 bmp，图床侧实测同样接受
+    if (buffer[0] === 0x42 && buffer[1] === 0x4d) {
+      return 'image/bmp'
+    }
+
     return null
   }
 
-  const extractBase64Payload = (base64Image) => {
+  const decodeBase64Image = (base64Image) => {
     if (typeof base64Image !== 'string') {
       throw new Error('base64 数据格式无效')
     }
@@ -156,9 +143,9 @@ module.exports = (ctx) => {
       throw new Error('base64 数据为空')
     }
 
-    const dataUrlMatch = raw.match(/^data:([^;]+);base64,([\s\S]+)$/i)
-    const mimeType = dataUrlMatch?.[1]?.toLowerCase() || null
-    const payload = (dataUrlMatch?.[2] || raw)
+    // 兼容 data URL 前缀与 URL-safe base64
+    const dataUrlMatch = raw.match(/^data:[^;]+;base64,([\s\S]+)$/i)
+    const payload = (dataUrlMatch?.[1] || raw)
       .replace(/\s+/g, '')
       .replace(/-/g, '+')
       .replace(/_/g, '/')
@@ -171,41 +158,30 @@ module.exports = (ctx) => {
       throw new Error('base64 数据包含非法字符')
     }
 
-    return { mimeType, payload }
-  }
-
-  const inferMimeType = (img, dataUrlMimeType, buffer) => {
-    const magicMime = detectMimeTypeFromBuffer(buffer)
-    if (magicMime) {
-      return magicMime
-    }
-
-    if (dataUrlMimeType) {
-      return dataUrlMimeType
-    }
-
-    const mimeFromImg = [img.type, img.mimeType, img.mimetype]
-      .find(value => typeof value === 'string' && value.includes('/'))
-    if (mimeFromImg) {
-      return mimeFromImg.toLowerCase()
-    }
-
-    return getMimeTypeFromExt(img.extname) || getMimeTypeFromFileName(img.fileName)
+    return Buffer.from(payload, 'base64')
   }
 
   const sanitizeFileName = (fileName, fallbackExt = '.png') => {
-    const rawName = typeof fileName === 'string' && fileName.trim()
-      ? fileName.trim()
-      : `picgo-upload-${Date.now()}-${Math.random().toString(36).slice(2, 11)}${fallbackExt}`
+    const fallback = `picgo-upload-${Date.now()}-${Math.random().toString(36).slice(2, 11)}${fallbackExt}`
+    const rawName = typeof fileName === 'string' && fileName.trim() ? fileName.trim() : fallback
 
-    let base = path.basename(rawName).replace(/[^\w.\-]+/g, '_')
-    if (!base || base === '.' || base === '..') {
-      base = `picgo-upload-${Date.now()}${fallbackExt}`
+    // path.basename 去掉路径穿越；normalize 让同一个字的组合形式保持一致
+    let base = path.basename(rawName).normalize('NFC').replace(UNSAFE_FILENAME_CHARS, '_')
+
+    // 纯点号（. / .. / ...）没有意义；结尾的点与空格会被部分环境吞掉
+    if (/^\.*$/.test(base)) {
+      base = ''
+    } else {
+      base = base.replace(/[. ]+$/, '')
+    }
+
+    if (!base) {
+      base = fallback
     }
 
     if (base.length > UPLOAD_CONFIG.MAX_FILENAME_LENGTH) {
       const ext = path.extname(base).slice(0, 16)
-      const nameBody = base.slice(0, UPLOAD_CONFIG.MAX_FILENAME_LENGTH - ext.length)
+      const nameBody = base.slice(0, Math.max(1, UPLOAD_CONFIG.MAX_FILENAME_LENGTH - ext.length))
       base = `${nameBody}${ext}`
     }
 
@@ -241,6 +217,67 @@ module.exports = (ctx) => {
     return statusCode !== null && statusCode >= 100 ? statusCode : null
   }
 
+  // PicGo 2.x 把响应体放在 error.response.body，3.x（axios）放在 error.response.data，
+  // 两边都可能是字符串或已解析的对象；取第一个非空值
+  const readErrorResponseBody = (error) => {
+    const body = [error?.response?.body, error?.response?.data]
+      .find(candidate => candidate != null && candidate !== '')
+
+    if (body == null) {
+      return null
+    }
+
+    if (typeof body === 'object') {
+      return body
+    }
+
+    if (typeof body !== 'string') {
+      return null
+    }
+
+    const text = body.trim()
+    if (!text) {
+      return null
+    }
+
+    try {
+      return JSON.parse(text)
+    } catch (parseError) {
+      return null
+    }
+  }
+
+  /**
+   * 识别图床的"业务拒绝"
+   *
+   * 图床把所有业务错误都表达成 HTTP 500 + {"success":false,"code":"error","message":"..."}
+   * （实测：超过 5MiB 返回 "The file to upload cannot be larger than 5MiB."）。
+   * 这种响应意味着服务端已经完整读过请求并明确拒绝，重发同样的字节不会有不同结果，
+   * 因此必须按不可重试处理；同时要把服务端的 message 透出来——只报 "status code 500"
+   * 会把真实原因（超限、内容被拒等）彻底吞掉。
+   *
+   * @param {Error} error - 请求错误
+   * @returns {{message: string|null}|null} 业务拒绝时返回对象，否则 null
+   */
+  const inspectServerRejection = (error) => {
+    if (getErrorStatusCode(error) === null) {
+      return null
+    }
+
+    const body = readErrorResponseBody(error)
+    if (!body || typeof body !== 'object') {
+      return null
+    }
+
+    // 只认图床自己的错误约定；{"code":500} 这类通用响应仍按服务器故障重试
+    if (body.success !== false && body.code !== 'error') {
+      return null
+    }
+
+    const message = typeof body.message === 'string' ? body.message.trim() : ''
+    return { message: message ? redactSecrets(message) : null }
+  }
+
   const isNetworkLevelError = (error) => {
     if (readErrorStatusCode(error) === 0) {
       return true
@@ -254,7 +291,7 @@ module.exports = (ctx) => {
     const message = (error?.message || '').toLowerCase()
 
     // 部分运行环境只把 errno 留在 message 里（如 "connect ECONNREFUSED 127.0.0.1:443"）
-    if (Array.from(RETRYABLE_ERROR_CODES).some(code => message.includes(code.toLowerCase()))) {
+    if (RETRYABLE_ERROR_CODE_LIST.some(code => message.includes(code.toLowerCase()))) {
       return true
     }
 
@@ -265,6 +302,11 @@ module.exports = (ctx) => {
     const statusCode = getErrorStatusCode(error)
 
     if (statusCode !== null) {
+      // 业务拒绝是确定性的，重试只会拖长失败时间
+      if (inspectServerRejection(error)) {
+        return false
+      }
+
       return statusCode === 429 || statusCode >= 500
     }
 
@@ -290,20 +332,23 @@ module.exports = (ctx) => {
     const message = error?.message || 'unknown error'
     const statusCode = getErrorStatusCode(error)
     const code = error?.code
-
-    if (statusCode !== null && code) {
-      return `${message} (status: ${statusCode}, code: ${code})`
-    }
+    const serverMessage = inspectServerRejection(error)?.message
+    const details = []
 
     if (statusCode !== null) {
-      return `${message} (status: ${statusCode})`
+      details.push(`status: ${statusCode}`)
     }
 
     if (code) {
-      return `${message} (code: ${code})`
+      details.push(`code: ${code}`)
     }
 
-    return message
+    // 图床的真实原因（如超过 5MiB）只存在于响应体里，必须带出来
+    if (serverMessage) {
+      details.push(`server: ${serverMessage}`)
+    }
+
+    return details.length > 0 ? `${message} (${details.join(', ')})` : message
   }
 
   const validateReturnedUrl = (url, fieldName) => {
@@ -341,57 +386,44 @@ module.exports = (ctx) => {
   const validateImage = (img) => {
     const displayName = img.fileName || 'unknown'
 
-    if (!img.buffer && !img.base64Image) {
-      const reason = `图片 ${displayName} 缺少数据`
+    const reject = (reason) => {
       ctx.log.error(reason)
       return reason
     }
 
-    let dataUrlMimeType = null
+    if (!img.buffer && !img.base64Image) {
+      return reject(`图片 ${displayName} 缺少数据`)
+    }
 
-    if (!img.buffer && img.base64Image) {
+    if (!img.buffer) {
       try {
-        const { mimeType, payload } = extractBase64Payload(img.base64Image)
-        dataUrlMimeType = mimeType
-        img.buffer = Buffer.from(payload, 'base64')
+        img.buffer = decodeBase64Image(img.base64Image)
 
         if (!img.buffer.length) {
           throw new Error('base64 转换后数据为空')
         }
       } catch (error) {
-        const reason = `图片 ${displayName} base64 转换失败: ${error.message}`
-        ctx.log.error(reason)
-        return reason
+        return reject(`图片 ${displayName} base64 转换失败: ${error.message}`)
       }
     }
 
     if (!Buffer.isBuffer(img.buffer)) {
-      const reason = `图片 ${displayName} 数据格式无效`
-      ctx.log.error(reason)
-      return reason
+      return reject(`图片 ${displayName} 数据格式无效`)
     }
 
     if (img.buffer.length === 0) {
-      const reason = `图片 ${displayName} 数据为空`
-      ctx.log.error(reason)
-      return reason
+      return reject(`图片 ${displayName} 数据为空`)
     }
 
     if (img.buffer.length > UPLOAD_CONFIG.MAX_FILE_SIZE) {
-      const reason =
+      return reject(
         `图片 ${displayName} 超过大小限制 (${UPLOAD_CONFIG.MAX_FILE_SIZE / 1024 / 1024}MB)`
-      ctx.log.error(reason)
-      return reason
+      )
     }
 
-    const magicMime = detectMimeTypeFromBuffer(img.buffer)
-    if (!magicMime || !UPLOAD_CONFIG.SUPPORTED_TYPES.includes(magicMime)) {
-      // 魔数无法识别时不再信任扩展名，避免伪装成图片
-      const declaredMime = inferMimeType(img, dataUrlMimeType, img.buffer)
-      const reason =
-        `图片 ${displayName} 类型不支持或无法识别: magic=${magicMime || 'unknown'}, declared=${declaredMime || 'unknown'}`
-      ctx.log.error(reason)
-      return reason
+    // 只信任文件头：扩展名和 data URL 里声明的 MIME 都可以随便写
+    if (!detectMimeTypeFromBuffer(img.buffer)) {
+      return reject(`图片 ${displayName} 类型不支持或无法识别（仅支持 JPEG/PNG/GIF/WebP/BMP）`)
     }
 
     return null
@@ -526,6 +558,7 @@ module.exports = (ctx) => {
         // PicGo 规范：imgUrl 必填；url 供剪贴板优先使用
         img.imgUrl = result.url
         img.url = result.url
+        // deleteUrl 仅供外部消费者读取，PicGo 的 GUI/剪贴板都不展示它
         img.deleteUrl = result.deleteUrl
         // 成功后释放本地数据，降低内存占用（官方/内置 uploader 惯例）
         delete img.buffer
@@ -689,12 +722,13 @@ module.exports = (ctx) => {
 
         return ctx
       },
-      // 图床级配置：当前无需用户填写，返回空数组即可
+      // 图床级配置：当前无需用户填写，返回空数组即可（PicGo 会调用它渲染设置页）
       config: () => []
     })
   }
 
-  // 插件级配置（存储于完整包名下）；本插件无额外配置
+  // 插件级配置（存储于完整包名下）；本插件无额外配置。
+  // 保留空实现是为了兼容会无条件调用 plugin.config() 的 PicGo 版本
   const config = () => []
 
   return {

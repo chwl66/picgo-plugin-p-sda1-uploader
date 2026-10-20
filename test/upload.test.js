@@ -15,6 +15,7 @@ const PNG = Buffer.concat([
   Buffer.alloc(64, 1)
 ])
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 2)])
+const BMP = Buffer.concat([Buffer.from('BM'), Buffer.alloc(64, 3)])
 
 const results = []
 const check = (name, condition, detail) => {
@@ -22,14 +23,18 @@ const check = (name, condition, detail) => {
   console.log(`${condition ? 'ok  ' : 'FAIL'} ${name}${detail ? `  -- ${detail}` : ''}`)
 }
 
-// PicGo 核心对非 2xx 的报错形状
+// PicGo 核心对非 2xx 的报错形状。
+// 响应体位置随核心版本不同：2.x 放 response.body，3.x（axios）放 response.data，
+// 插件必须两种都认，因此这里按用例切换
+let errorBodyKey = 'data'
+
 const httpError = (status, body) => ({
   name: 'Error',
   message: `Request failed with status code ${status}`,
   statusCode: status,
   method: 'POST',
   url: 'https://p.sda1.dev/api/v1/upload_external_noform',
-  response: { status, statusCode: status, data: body, headers: {} }
+  response: { status, statusCode: status, [errorBodyKey]: body, headers: {} }
 })
 
 // PicGo 核心对"没拿到响应"（超时 / DNS / 连接失败）的报错形状：statusCode 为 0 且没有 code
@@ -198,7 +203,17 @@ const scenarios = [
     images: () => [{ fileName: '../../secret 照片#1.png', buffer: PNG }],
     assert: (ctx, state) => {
       const name = queryOf(state.requests[0].url).get('filename')
-      check('路径穿越与非法字符被中和', name === 'secret_1.png', `filename=${name}`)
+      check('路径穿越与链接破坏字符被中和', name === 'secret_照片_1.png', `filename=${name}`)
+    }
+  },
+  {
+    name: '中文文件名保留',
+    handler: (req, res) => okUpload(res),
+    images: () => [{ fileName: '旅行照片 01.png', buffer: PNG }],
+    assert: (ctx, state) => {
+      const name = queryOf(state.requests[0].url).get('filename')
+      // 图床接受 Unicode 文件名（实测可上传、URL 可访问），插件不再折叠成 ASCII
+      check('中文保留，只替换空白', name === '旅行照片_01.png', `filename=${name}`)
     }
   },
   {
@@ -211,6 +226,17 @@ const scenarios = [
         !!thrown && /类型不支持或无法识别/.test(thrown.message), thrown?.message)
       check('校验失败不发出网络请求', state.attempts === 0, `attempts=${state.attempts}`)
       check('全失败时发出 notification', state.notifications.length === 1)
+    }
+  },
+  {
+    name: 'BMP 支持',
+    handler: (req, res) => okUpload(res),
+    images: () => [{ fileName: 'a.bmp', buffer: BMP }],
+    assert: (ctx, state, thrown) => {
+      // 图床官网前端的 allowedFileExtensions 含 bmp，图床侧实测也接受
+      check('BMP 魔数被接受', thrown === null && state.attempts === 1, `attempts=${state.attempts}`)
+      check('BMP 文件名原样发出',
+        queryOf(state.requests[0].url).get('filename') === 'a.bmp')
     }
   },
   {
@@ -315,6 +341,38 @@ const scenarios = [
     attempts: 4,
     assert: (ctx, state) => {
       check('HTTP 5xx 重试（期望 4 次）', state.attempts === 4, `attempts=${state.attempts}`)
+    }
+  },
+  {
+    name: '图床业务拒绝不重试',
+    handler: (req, res) => {
+      // 图床把所有业务错误都表达成 500 + success:false（实测超限原文）
+      res.writeHead(500, { 'content-type': 'application/json' })
+      res.end('{"success":false,"code":"error","message":"The file to upload cannot be larger than 5MiB."}')
+    },
+    images: () => [{ fileName: 'a.png', buffer: PNG }],
+    attempts: 1,
+    assert: (ctx, state, thrown) => {
+      check('500 业务拒绝不重试（期望 1 次）', state.attempts === 1, `attempts=${state.attempts}`)
+      check('失败通知里带出图床真实原因',
+        /5MiB/.test(state.notifications[0]?.body || ''), state.notifications[0]?.body)
+      check('异常信息里也带出图床真实原因',
+        /5MiB/.test(thrown?.message || ''), thrown?.message)
+    }
+  },
+  {
+    name: '图床业务拒绝不重试（PicGo 2.x 响应体位置）',
+    handler: (req, res) => {
+      res.writeHead(500, { 'content-type': 'application/json' })
+      res.end('{"success":false,"code":"error","message":"Backend error."}')
+    },
+    errorBodyKey: 'body',
+    images: () => [{ fileName: 'a.png', buffer: PNG }],
+    attempts: 1,
+    assert: (ctx, state) => {
+      check('response.body 里的原因同样能读出来',
+        state.attempts === 1 && /Backend error/.test(state.notifications[0]?.body || ''),
+        state.notifications[0]?.body)
     }
   },
   {
@@ -430,6 +488,8 @@ const scenarios = [
 ]
 
 const runScenario = async (scenario) => {
+  errorBodyKey = scenario.errorBodyKey || 'data'
+
   await withMockServer(
     scenario.handler,
     async (ctx, state) => {
